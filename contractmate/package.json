@@ -1,0 +1,224 @@
+{
+  "name": "contractmate",
+  "displayName": "ContractMate",
+  "description": "法務業務に特化したファイルビューア拡張機能。PDF、Word、Excel、PowerPoint、画像、テキストファイルなどを適切に表示・編集できます。",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown",
+    "onWebviewPanel:markdown.preview"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "contractmate.openFile",
+        "title": "ContractMate: ファイルを開く"
+      },
+      {
+        "command": "contractmate.openFileFromExplorer",
+        "title": "ContractMateで開く"
+      },
+      {
+        "command": "contractmate.openPdf",
+        "title": "ContractMate: PDFを開く"
+      },
+      {
+        "command": "contractmate.openWord",
+        "title": "ContractMate: Wordファイルを開く"
+      },
+      {
+        "command": "contractmate.openExcel",
+        "title": "ContractMate: Excelファイルを開く"
+      },
+      {
+        "command": "contractmate.openPowerPoint",
+        "title": "ContractMate: PowerPointファイルを開く"
+      },
+      {
+        "command": "contractmate.openImage",
+        "title": "ContractMate: 画像ファイルを開く"
+      },
+      {
+        "command": "contractmate.openText",
+        "title": "ContractMate: テキストファイルを開く"
+      },
+      {
+        "command": "contractmate.openCustom",
+        "title": "ContractMate: カスタムアプリケーションで開く"
+      },
+      {
+        "command": "contractmate.configureCustomApp",
+        "title": "ContractMate: カスタムアプリケーションを設定"
+      },
+      {
+        "command": "contractmate.openSettings",
+        "title": "ContractMate: 設定を開く"
+      },
+      {
+        "command": "contractmate.openPdfAtPage",
+        "title": "ContractMate: 指定ページでPDFを開く"
+      },
+      {
+        "command": "contractmate.handleMarkdownLink",
+        "title": "ContractMate: Markdownリンクを処理"
+      },
+      {
+        "command": "contractmate.goToPage",
+        "title": "ContractMate: PDFの指定ページに移動"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "contractmate.openFileFromExplorer",
+          "group": "navigation",
+          "when": "resourceScheme == file"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "contractmate.openFileFromExplorer",
+          "when": "false"
+        },
+        {
+          "command": "contractmate.openPdf",
+          "when": "false"
+        },
+        {
+          "command": "contractmate.openWord",
+          "when": "false"
+        },
+        {
+          "command": "contractmate.openExcel",
+          "when": "false"
+        },
+        {
+          "command": "contractmate.openPowerPoint",
+          "when": "false"
+        },
+        {
+          "command": "contractmate.openImage",
+          "when": "false"
+        },
+        {
+          "command": "contractmate.openText",
+          "when": "false"
+        },
+        {
+          "command": "contractmate.openCustom",
+          "when": "false"
+        }
+      ]
+    },
+    "customEditors": [
+      {
+        "viewType": "contractmate.pdfViewer",
+        "displayName": "PDF Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "contractmate.imageViewer",
+        "displayName": "Image Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.{png,jpg,jpeg,gif,bmp,webp}"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "contractmate.wordViewer",
+        "displayName": "Word Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.{doc,docx}"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "contractmate.excelViewer",
+        "displayName": "Excel Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.{xls,xlsx}"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "contractmate.powerPointViewer",
+        "displayName": "PowerPoint Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.{ppt,pptx,pps,ppsx,pot,potx,pptm,potm,ppsm}"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "configuration": {
+      "title": "ContractMate",
+      "properties": {
+        "contractmate.wordAppPath": {
+          "type": "string",
+          "default": "",
+          "description": "Wordアプリケーションのパス（空の場合はデフォルトアプリを使用）"
+        },
+        "contractmate.excelAppPath": {
+          "type": "string",
+          "default": "",
+          "description": "Excelアプリケーションのパス（空の場合はデフォルトアプリを使用）"
+        },
+        "contractmate.powerPointAppPath": {
+          "type": "string",
+          "default": "",
+          "description": "PowerPointアプリケーションのパス（空の場合はデフォルトアプリを使用）"
+        },
+        "contractmate.customExtensions": {
+          "type": "object",
+          "default": {},
+          "description": "カスタム拡張子とアプリケーションのマッピング（例: {\"xyz\": \"C:\\\\Program Files\\\\App\\\\app.exe\"}）"
+        },
+        "contractmate.pdfViewerScale": {
+          "type": "number",
+          "default": 1.5,
+          "description": "PDFビューアーの拡大率"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^8.28.0",
+    "@typescript-eslint/parser": "^8.28.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "eslint": "^9.23.0",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.1.91"
+  }
+}

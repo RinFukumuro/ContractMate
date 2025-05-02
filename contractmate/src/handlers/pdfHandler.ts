@@ -317,7 +317,6 @@ export class PdfHandler {
         }
     }
 }
-
 /**
  * PDFファイルのカスタムエディタプロバイダ
  */
@@ -650,6 +649,9 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
         const pdfWorkerPath = webview.asWebviewUri(vscode.Uri.joinPath(pdfJsDistPath, 'build', 'pdf.worker.mjs')).toString();
         const pdfViewerCssPath = webview.asWebviewUri(vscode.Uri.joinPath(pdfJsDistPath, 'web', 'pdf_viewer.css')).toString();
         
+        // cMapUrlを事前に計算（末尾にスラッシュを追加）
+        const cMapUrl = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'pdfjs-dist', 'cmaps')).toString() + '/';
+        
         // PDFデータをBase64エンコード
         const pdfDataBase64 = Buffer.from(pdfData).toString('base64');
         
@@ -864,11 +866,8 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
                                                             // スクロール位置を設定（ページの上部に合わせる）
                                                             const scrollPosition = targetElement.offsetTop - 40;
                                                             
-                                                            // スムーズスクロールを使用
-                                                            viewerContainer.scrollTo({
-                                                                top: scrollPosition,
-                                                                behavior: 'smooth'
-                                                            });
+                                                            // 即時スクロール（スムーズスクロールなし）
+                                                            viewerContainer.scrollTop = scrollPosition;
                                                             
                                                             // スクロール完了を確認するために少し待機
                                                             setTimeout(() => {
@@ -915,79 +914,32 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
                                                             const firstPage = document.querySelector('.page');
                                                             if (firstPage) {
                                                                 const pageHeight = firstPage.clientHeight;
-                                                                const estimatedPosition = (pageNum - 1) * (pageHeight + 10); // 10はマージン
-                                                                
-                                                                logToVSCode('ページの高さを推定: ' + pageHeight + 'px');
-                                                                logToVSCode('推定スクロール位置: ' + estimatedPosition + 'px');
-                                                                
-                                                                // 推定位置にスクロール
+                                                                const estimatedPosition = (pageNum - 1) * (pageHeight + 10); // 10はページ間のマージン
                                                                 viewerContainer.scrollTop = estimatedPosition;
-                                                                
-                                                                // スクロール完了を通知
-                                                                vscode.postMessage({
-                                                                    command: 'pageJumpComplete',
-                                                                    page: pageNum,
-                                                                    success: true,
-                                                                    warning: '推定位置にスクロールしました'
-                                                                });
-                                                            } else {
-                                                                logToVSCode('ページ要素が見つかりません。スクロールできません。');
-                                                                
-                                                                // 失敗を通知
-                                                                vscode.postMessage({
-                                                                    command: 'pageJumpComplete',
-                                                                    page: pageNum,
-                                                                    success: false,
-                                                                    error: 'ページ要素が見つかりません'
-                                                                });
                                                             }
                                                         } catch (error) {
-                                                            logToVSCode('代替スクロール方法でエラーが発生しました: ' + error);
-                                                            
-                                                            // 失敗を通知
-                                                            vscode.postMessage({
-                                                                command: 'pageJumpComplete',
-                                                                page: pageNum,
-                                                                success: false,
-                                                                error: error.toString()
-                                                            });
+                                                            console.error('ページジャンプ失敗:', error);
                                                         }
                                                     }
                                                 };
                                                 
-                                                // レンダリング待機を開始
-                                                setTimeout(() => enhancedJumpToPage(), 300);
+                                                // ページジャンプを実行
+                                                enhancedJumpToPage();
                                             }).catch(error => {
-                                                logToVSCode('ページ取得エラー: ' + error);
-                                                
-                                                // エラーを通知
-                                                vscode.postMessage({
-                                                    command: 'pageJumpComplete',
-                                                    page: pageNum,
-                                                    success: false,
-                                                    error: error.toString()
-                                                });
+                                                reportErrorToVSCode(error);
                                             });
                                         } catch (error) {
-                                            logToVSCode('ページジャンプ処理でエラーが発生しました: ' + error);
-                                            
-                                            // エラーを通知
-                                            vscode.postMessage({
-                                                command: 'pageJumpComplete',
-                                                page: pageNum,
-                                                success: false,
-                                                error: error.toString()
-                                            });
+                                            reportErrorToVSCode(error);
                                         }
                                     }
                                     break;
                             }
                         });
-
-                        // UI要素
-                        const viewerContainer = document.getElementById('viewerContainer');
-                        const viewer = document.getElementById('viewer');
+                        
+                        // UI要素の取得
                         const loadingMessage = document.getElementById('loadingMessage');
+                        const viewer = document.getElementById('viewer');
+                        const viewerContainer = document.getElementById('viewerContainer');
                         const prevButton = document.getElementById('prevPage');
                         const nextButton = document.getElementById('nextPage');
                         const pageInput = document.getElementById('pageInput');
@@ -997,893 +949,287 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
                         const fitWidthButton = document.getElementById('fitWidth');
                         const resetZoomButton = document.getElementById('resetZoom');
                         
-                        logToVSCode('UI要素の初期化完了');
+                        // ページをレンダリングするキュー処理
+                        function queueRenderPage(num) {
+                            if (renderQueue.indexOf(num) === -1) {
+                                renderQueue.push(num);
+                                processRenderQueue();
+                            }
+                        }
                         
-                        // スクロールタイマー用の変数
-                        let scrollTimer = null;
-                        
-                        // スクロールイベントを監視して、現在表示されているページを認識する
-                        viewerContainer.addEventListener('scroll', function() {
-                            if (!pdfDoc || isRendering) return;
-                            
-                            // スクロール中のタイマーをクリア
-                            if (scrollTimer) {
-                                clearTimeout(scrollTimer);
+                        // レンダリングキューを処理
+                        function processRenderQueue() {
+                            if (isRendering || renderQueue.length === 0) {
+                                return;
                             }
                             
-                            // スクロールが停止した後に現在のページを更新（デバウンス処理）
-                            scrollTimer = setTimeout(() => {
-                                // スクロール位置を取得
-                                const scrollTop = viewerContainer.scrollTop;
-                                const viewportHeight = viewerContainer.clientHeight;
+                            isRendering = true;
+                            const num = renderQueue.shift();
+                            
+                            // 既にレンダリング済みのページはスキップ
+                            if (document.querySelector('.page[data-page-number="' + num + '"]')) {
+                                isRendering = false;
+                                processRenderQueue();
+                                return;
+                            }
+                            
+                            // ページをレンダリング
+                            pdfDoc.getPage(num).then(function(page) {
+                                const viewport = page.getViewport({ scale: scale });
                                 
-                                // 表示されているすべてのページ要素を取得
-                                const pageElements = document.querySelectorAll('.page');
-                                if (pageElements.length === 0) return;
+                                // ページ要素を作成
+                                const pageDiv = document.createElement('div');
+                                pageDiv.className = 'page';
+                                pageDiv.setAttribute('data-page-number', num);
                                 
-                                // 各ページの可視率を計算し、最も可視率が高いページを特定
-                                let mostVisiblePage = null;
-                                let highestVisibleRatio = 0;
+                                // キャンバスを作成
+                                const canvas = document.createElement('canvas');
+                                const context = canvas.getContext('2d');
+                                canvas.height = viewport.height;
+                                canvas.width = viewport.width;
                                 
-                                pageElements.forEach(pageElement => {
-                                    const rect = pageElement.getBoundingClientRect();
-                                    
-                                    // ページの上端と下端の位置（ビューポート相対）
-                                    const pageTop = rect.top;
-                                    const pageBottom = rect.bottom;
-                                    
-                                    // ビューポートの上端と下端の位置
-                                    const viewportTop = 0;
-                                    const viewportBottom = viewportHeight;
-                                    
-                                    // ページとビューポートの重なり部分を計算
-                                    const overlapTop = Math.max(pageTop, viewportTop);
-                                    const overlapBottom = Math.min(pageBottom, viewportBottom);
-                                    
-                                    // 重なりがある場合のみ計算
-                                    if (overlapBottom > overlapTop) {
-                                        // 重なっている高さ
-                                        const overlapHeight = overlapBottom - overlapTop;
-                                        // ページの高さに対する可視部分の割合
-                                        const visibleRatio = overlapHeight / rect.height;
-                                        
-                                        // 可視率が30%以上かつ、これまでの最高可視率より高い場合
-                                        if (visibleRatio > highestVisibleRatio && visibleRatio >= 0.3) {
-                                            highestVisibleRatio = visibleRatio;
-                                            mostVisiblePage = pageElement;
-                                        }
+                                // ページをキャンバスにレンダリング
+                                const renderContext = {
+                                    canvasContext: context,
+                                    viewport: viewport
+                                };
+                                
+                                pageDiv.appendChild(canvas);
+                                
+                                // ページを適切な位置に挿入
+                                let inserted = false;
+                                const pages = viewer.querySelectorAll('.page');
+                                for (let i = 0; i < pages.length; i++) {
+                                    const pageNumber = parseInt(pages[i].getAttribute('data-page-number'));
+                                    if (pageNumber > num) {
+                                        viewer.insertBefore(pageDiv, pages[i]);
+                                        inserted = true;
+                                        break;
                                     }
+                                }
+                                
+                                if (!inserted) {
+                                    viewer.appendChild(pageDiv);
+                                }
+                                
+                                // ページをレンダリング
+                                page.render(renderContext).promise.then(function() {
+                                    // レンダリング完了
+                                    isRendering = false;
+                                    
+                                    // キャッシュに保存
+                                    pagesCache[num] = true;
+                                    
+                                    // 次のページをレンダリング
+                                    processRenderQueue();
+                                    
+                                    // ローディングメッセージを非表示
+                                    loadingMessage.style.display = 'none';
+                                }).catch(function(error) {
+                                    console.error('ページレンダリングエラー:', error);
+                                    isRendering = false;
+                                    processRenderQueue();
                                 });
-                                
-                                // 可視率が30%以上のページが見つからなかった場合、最も可視率が高いページを選択
-                                if (!mostVisiblePage && pageElements.length > 0) {
-                                    // 各ページの可視率を再計算
-                                    let bestPage = null;
-                                    let bestRatio = 0;
-                                    
-                                    pageElements.forEach(pageElement => {
-                                        const rect = pageElement.getBoundingClientRect();
-                                        
-                                        // ページの上端と下端の位置（ビューポート相対）
-                                        const pageTop = rect.top;
-                                        const pageBottom = rect.bottom;
-                                        
-                                        // ビューポートの上端と下端の位置
-                                        const viewportTop = 0;
-                                        const viewportBottom = viewportHeight;
-                                        
-                                        // ページとビューポートの重なり部分を計算
-                                        const overlapTop = Math.max(pageTop, viewportTop);
-                                        const overlapBottom = Math.min(pageBottom, viewportBottom);
-                                        
-                                        // 重なりがある場合のみ計算
-                                        if (overlapBottom > overlapTop) {
-                                            // 重なっている高さ
-                                            const overlapHeight = overlapBottom - overlapTop;
-                                            // ページの高さに対する可視部分の割合
-                                            const visibleRatio = overlapHeight / rect.height;
-                                            
-                                            if (visibleRatio > bestRatio) {
-                                                bestRatio = visibleRatio;
-                                                bestPage = pageElement;
-                                            }
-                                        }
-                                    });
-                                    
-                                    if (bestPage) {
-                                        mostVisiblePage = bestPage;
-                                        highestVisibleRatio = bestRatio;
-                                    }
-                                }
-                                
-                                // 最も可視率が高いページが見つかった場合
-                                if (mostVisiblePage) {
-                                    const newPageNum = parseInt(mostVisiblePage.dataset.pageNumber, 10);
-                                    if (newPageNum !== pageNum) {
-                                        pageNum = newPageNum;
-                                        pageInput.value = pageNum;
-                                        logToVSCode('スクロールにより現在のページを ' + pageNum + ' に更新しました（可視率: ' + Math.round(highestVisibleRatio * 100) + '%）');
-                                    }
-                                }
-                            }, 100); // 100ms後に実行
-                        });
-
+                            }).catch(function(error) {
+                                console.error('ページ取得エラー:', error);
+                                isRendering = false;
+                                processRenderQueue();
+                            });
+                        }
+                        
+                        // ページを更新する関数
+                        function renderPage(num) {
+                            // ページ番号を更新
+                            pageNum = num;
+                            pageInput.value = pageNum;
+                            
+                            // 前後のページをキューに追加
+                            queueRenderPage(num);
+                            
+                            // 前後のページも事前にレンダリング
+                            if (num > 1) {
+                                queueRenderPage(num - 1);
+                            }
+                            if (num < pdfDoc.numPages) {
+                                queueRenderPage(num + 1);
+                            }
+                            
+                            // 表示されているページにスクロール
+                            const targetPage = document.querySelector('.page[data-page-number="' + num + '"]');
+                            if (targetPage) {
+                                viewerContainer.scrollTop = targetPage.offsetTop - 40;
+                            }
+                            
+                            return Promise.resolve();
+                        }
+                        
                         // Base64エンコードされたPDFデータをデコード
                         const pdfData = atob('${pdfDataBase64}');
-                        logToVSCode('PDFデータのデコード完了: ' + pdfData.length + ' バイト');
+                        logToVSCode('PDFデータのデコード完了: ' + pdfData.length + ' バイト', true);
                         
                         // Uint8Arrayに変換
                         const uint8Array = new Uint8Array(pdfData.length);
                         for (let i = 0; i < pdfData.length; i++) {
                             uint8Array[i] = pdfData.charCodeAt(i);
                         }
-                        logToVSCode('Uint8Arrayへの変換完了');
+                        logToVSCode('Uint8Arrayへの変換完了: ' + uint8Array.length + ' バイト', true);
                         
-                        // URLからハッシュフラグメントとクエリパラメータを抽出（ページ番号を取得するため）
-                        const urlHash = window.location.hash;
-                        const urlSearch = window.location.search;
-                        let initialPage = 1;
+                        // PDFを読み込む
+                        logToVSCode('PDFの読み込み開始', true);
                         
-                        // デバッグ情報を出力
-                        logToVSCode('URLハッシュ: ' + urlHash);
-                        logToVSCode('URLクエリパラメータ: ' + urlSearch);
-                        
-                        // ページ内リンクのサポート
-                        // ページ内の <a href="#page=N"> リンクをクリックしたときにページジャンプするように設定
-                        document.addEventListener('click', function(e) {
-                            // クリックされた要素がリンクかどうかを確認
-                            if (e.target.tagName === 'A') {
-                                const href = e.target.getAttribute('href');
-                                if (href && (href.match(/#page=\d+/) || href.match(/#\d+$/))) {
-                                    logToVSCode('ページ内リンクがクリックされました: ' + href);
+                        try {
+                            // PDF.jsのオプションを設定（シンプル化）
+                            const pdfOptions = {
+                                data: uint8Array,
+                                // 最小限のオプションのみ設定
+                                cMapUrl: '${cMapUrl}',
+                                cMapPacked: true
+                            };
+                            
+                            logToVSCode('PDF.jsオプション設定完了', true);
+                            
+                            // PDFの読み込みとレンダリング
+                            pdfjsLib.getDocument(pdfOptions).promise
+                                .then(function(pdf) {
+                                    logToVSCode('PDFの読み込み成功: ' + pdf.numPages + ' ページ', true);
+                                    pdfDoc = pdf;
+                                    loadingMessage.style.display = 'none';
+                                    pageCount.textContent = pdf.numPages;
+                                    pageInput.max = pdf.numPages;
                                     
-                                    // デフォルトの動作を防止（ページのリロードを防ぐ）
-                                    e.preventDefault();
+                                    // 最初のページをレンダリング（直接レンダリング）
+                                    renderPage(pageNum).then(() => {
+                                        logToVSCode('最初のページのレンダリング完了', true);
+                                    }).catch(error => {
+                                        logToVSCode('最初のページのレンダリングエラー: ' + error, true);
+                                    });
                                     
-                                    // URLハッシュを変更（hashchangeイベントが発火する）
-                                    window.location.hash = href.substring(href.indexOf('#'));
-                                }
+                                    // PDFビューアの準備完了を通知
+                                    vscode.postMessage({
+                                        command: 'ready',
+                                        totalPages: pdf.numPages,
+                                        currentPage: pageNum
+                                    });
+                                })
+                                .catch(function(error) {
+                                    loadingMessage.textContent = 'PDFの読み込みに失敗しました: ' + error;
+                                    reportErrorToVSCode(error);
+                                    logToVSCode('PDFの読み込みエラー: ' + error, true);
+                                });
+                        } catch (error) {
+                            loadingMessage.textContent = 'PDFの初期化に失敗しました: ' + error;
+                            reportErrorToVSCode(error);
+                            logToVSCode('PDF初期化エラー: ' + error, true);
+                        }
+                        
+                        // イベントリスナーの設定
+                        prevButton.addEventListener('click', function() {
+                            if (pageNum <= 1) {
+                                return;
                             }
+                            pageNum--;
+                            renderPage(pageNum);
                         });
                         
-                        // 1. ハッシュフラグメントからページ番号を抽出
-                        if (urlHash) {
-                            // URLをデコード
-                            let decodedHash;
-                            try {
-                                decodedHash = decodeURIComponent(urlHash);
-                                logToVSCode('デコード後のURLハッシュ: ' + decodedHash);
-                            } catch (e) {
-                                logToVSCode('URLハッシュのデコードに失敗: ' + e);
-                                decodedHash = urlHash;
-                            }
-                            
-                            // #page=N 形式のチェック（デコード後）
-                            const pageMatch = decodedHash.match(/#page=(\d+)/i);
-                            if (pageMatch && pageMatch[1]) {
-                                initialPage = parseInt(pageMatch[1], 10);
-                                logToVSCode('デコードされたURLハッシュから抽出したページ番号(#page=N形式): ' + initialPage);
-                            }
-                            // #page%3DN 形式のチェック（デコード前）
-                            else {
-                                const encodedPageMatch = urlHash.match(/#page%3D(\d+)/i);
-                                if (encodedPageMatch && encodedPageMatch[1]) {
-                                    initialPage = parseInt(encodedPageMatch[1], 10);
-                                    logToVSCode('エンコードされたURLハッシュから抽出したページ番号(#page%3DN形式): ' + initialPage);
-                                }
-                                // #N 形式のチェック（デコード後）
-                                else {
-                                    const hashMatch = decodedHash.match(/#(\d+)$/);
-                                    if (hashMatch && hashMatch[1]) {
-                                        initialPage = parseInt(hashMatch[1], 10);
-                                        logToVSCode('デコードされたURLハッシュから抽出したページ番号(#N形式): ' + initialPage);
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // 2. クエリパラメータからページ番号を抽出
-                        if (initialPage === 1 && urlSearch) {
-                            // URLをデコード
-                            let decodedSearch;
-                            try {
-                                decodedSearch = decodeURIComponent(urlSearch);
-                                logToVSCode('デコード後のURLクエリパラメータ: ' + decodedSearch);
-                            } catch (e) {
-                                logToVSCode('URLクエリパラメータのデコードに失敗: ' + e);
-                                decodedSearch = urlSearch;
-                            }
-                            
-                            // ?page=N 形式のチェック（デコード後）
-                            const pageMatch = decodedSearch.match(/[?&]page=(\d+)/i);
-                            if (pageMatch && pageMatch[1]) {
-                                initialPage = parseInt(pageMatch[1], 10);
-                                logToVSCode('デコードされたURLクエリパラメータから抽出したページ番号(?page=N形式): ' + initialPage);
-                            }
-                            // ?page%3DN 形式のチェック（デコード前）
-                            else {
-                                const encodedPageMatch = urlSearch.match(/[?&]page%3D(\d+)/i);
-                                if (encodedPageMatch && encodedPageMatch[1]) {
-                                    initialPage = parseInt(encodedPageMatch[1], 10);
-                                    logToVSCode('エンコードされたURLクエリパラメータから抽出したページ番号(?page%3DN形式): ' + initialPage);
-                                }
-                            }
-                        }
-                        
-                        // 初期ページ番号を設定
-                        if (initialPage > 1) {
-                            pageNum = initialPage;
-                            logToVSCode('初期ページ番号を設定: ' + pageNum);
-                        }
-
-                        // PDFを読み込む
-                        logToVSCode('PDFの読み込み開始');
-                        
-                        // PDF.jsのオプションを設定
-                        const pdfOptions = {
-                            data: uint8Array,
-                            // PDF.jsの標準機能を有効化
-                            enableXfa: true,
-                            cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/cmaps/',
-                            cMapPacked: true,
-                            // 追加のオプション
-                            disableAutoFetch: false,
-                            disableStream: false,
-                            // レンダリングの品質を向上
-                            useSystemFonts: true,
-                            isEvalSupported: true,
-                            standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/standard_fonts/'
-                        };
-                        
-                        logToVSCode('PDF.jsオプション設定完了: ' + JSON.stringify(pdfOptions));
-                        
-                        pdfjsLib.getDocument(pdfOptions).promise
-                            .then(function(pdf) {
-                                logToVSCode('PDFの読み込み成功: ' + pdf.numPages + ' ページ', true);
-                                pdfDoc = pdf;
-                                loadingMessage.style.display = 'none';
-                                pageCount.textContent = pdf.numPages;
-                                pageInput.max = pdf.numPages;
-                                
-                                // 最初のページをレンダリング
-                                queueRenderPage(pageNum);
-                                
-                                // ビューポートの変更を監視
-                                const resizeObserver = new ResizeObserver(entries => {
-                                    for (let entry of entries) {
-                                        if (entry.target === viewerContainer) {
-                                            containerWidth = entry.contentRect.width - 40;
-                                            if (fitWidthButton.classList.contains('active')) {
-                                                fitToWidth();
-                                            }
-                                        }
-                                    }
-                                });
-                                resizeObserver.observe(viewerContainer);
-                                
-                                // 初期状態で幅に合わせる
-                                setTimeout(() => {
-                                    fitToWidth();
-                                    
-                                    // ビューアのスタイルを設定（スクロールモードを垂直に固定）
-                                    viewer.style.flexDirection = 'column';
-                                    logToVSCode('ビューアのスタイルを設定: 垂直スクロールモード', true);
-                                }, 500);
-                                
-                                // 最初のページがレンダリングされたことを確認してから準備完了を通知
-                                const checkFirstPageRendered = (attempts = 0) => {
-                                    const firstPageElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                    if (firstPageElement) {
-                                        logToVSCode('最初のページのレンダリングを確認しました', true);
-                                        
-                                        // PDFビューアの準備完了を通知
-                                        vscode.postMessage({
-                                            command: 'ready',
-                                            totalPages: pdf.numPages,
-                                            currentPage: pageNum
-                                        });
-                                        logToVSCode('PDFビューアの準備完了通知を送信しました', true);
-                                        
-                                        // URLからページ番号を抽出して直接ジャンプ
-                                        const urlHash = window.location.hash;
-                                        if (urlHash) {
-                                            // #page=N 形式のチェック
-                                            const pageMatch = urlHash.match(/#page=(\d+)/i);
-                                            if (pageMatch && pageMatch[1]) {
-                                                const pageFromHash = parseInt(pageMatch[1], 10);
-                                                if (pageFromHash > 0 && pageFromHash <= pdf.numPages) {
-                                                    logToVSCode('URLハッシュからページ番号 ' + pageFromHash + ' を検出しました。直接ジャンプします。');
-                                                    pageNum = pageFromHash;
-                                                    pageInput.value = pageNum;
-                                                    
-                                                    // 少し遅延させてからジャンプ
-                                                    setTimeout(() => {
-                                                        const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                                        if (targetElement) {
-                                                            viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                                            logToVSCode('ページ ' + pageNum + ' に直接スクロールしました（URLハッシュから）');
-                                                        }
-                                                    }, 500);
-                                                }
-                                            }
-                                            // #N 形式のチェック
-                                            else {
-                                                const hashMatch = urlHash.match(/#(\d+)$/);
-                                                if (hashMatch && hashMatch[1]) {
-                                                    const pageFromHash = parseInt(hashMatch[1], 10);
-                                                    if (pageFromHash > 0 && pageFromHash <= pdf.numPages) {
-                                                        logToVSCode('URLハッシュからページ番号 ' + pageFromHash + ' を検出しました。直接ジャンプします。');
-                                                        pageNum = pageFromHash;
-                                                        pageInput.value = pageNum;
-                                                        
-                                                        // 少し遅延させてからジャンプ
-                                                        setTimeout(() => {
-                                                            const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                                            if (targetElement) {
-                                                                viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                                                logToVSCode('ページ ' + pageNum + ' に直接スクロールしました（URLハッシュから）');
-                                                            }
-                                                        }, 500);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    } else if (attempts < 10) {
-                                        logToVSCode('最初のページのレンダリングを待機中... (' + (attempts + 1) + '/10)');
-                                        setTimeout(() => checkFirstPageRendered(attempts + 1), 300);
-                                    } else {
-                                        logToVSCode('最初のページのレンダリングタイムアウト。準備完了を通知します。');
-                                        
-                                        // PDFビューアの準備完了を通知
-                                        vscode.postMessage({
-                                            command: 'ready',
-                                            totalPages: pdf.numPages,
-                                            currentPage: pageNum
-                                        });
-                                        logToVSCode('PDFビューアの準備完了通知を送信しました');
-                                    }
-                                };
-                                
-                                // 最初のページのレンダリングを確認
-                                setTimeout(() => checkFirstPageRendered(), 500);
-                            })
-                            .catch(function(error) {
-                                loadingMessage.textContent = 'PDFの読み込みに失敗しました: ' + error;
-                                reportErrorToVSCode(error);
-                                console.error('PDFの読み込みエラー:', error);
-                            });
-
-                        // ページをレンダリングするキューに追加
-                        function queueRenderPage(num) {
-                            if (renderQueue.indexOf(num) === -1) {
-                                renderQueue.push(num);
-                                if (!isRendering) {
-                                    processRenderQueue();
-                                }
-                            }
-                        }
-
-                        // レンダリングキューを処理
-                        function processRenderQueue() {
-                            if (renderQueue.length === 0) {
-                                isRendering = false;
+                        nextButton.addEventListener('click', function() {
+                            if (pageNum >= pdfDoc.numPages) {
                                 return;
                             }
-                            
-                            isRendering = true;
-                            const num = renderQueue.shift();
-                            renderPage(num).then(() => {
-                                processRenderQueue();
-                            }).catch(error => {
-                                reportErrorToVSCode(error);
-                                console.error('ページレンダリングエラー:', error);
-                                processRenderQueue();
-                            });
-                        }
-
-                        // ページをレンダリング
-                        function renderPage(num) {
-                            return new Promise((resolve, reject) => {
-                                if (pagesCache[num]) {
-                                    // すでにレンダリング済みのページがある場合
-                                    if (!pagesCache[num].parentNode) {
-                                        // ページを正しい位置に挿入する
-                                        insertPageInOrder(pagesCache[num], num);
-                                    }
-                                    resolve();
-                                    return;
-                                }
-                                
-                                pdfDoc.getPage(num).then(function(page) {
-                                    const viewport = page.getViewport({ scale });
-                                    
-                                    // ページ用のdiv要素を作成
-                                    const pageDiv = document.createElement('div');
-                                    pageDiv.className = 'page';
-                                    pageDiv.dataset.pageNumber = num;
-                                    pageDiv.style.width = viewport.width + 'px';
-                                    pageDiv.style.height = viewport.height + 'px';
-                                    pageDiv.style.position = 'relative';
-                                    
-                                    // ページ用のcanvas要素を作成
-                                    const canvas = document.createElement('canvas');
-                                    const context = canvas.getContext('2d', { alpha: false });
-                                    canvas.width = viewport.width;
-                                    canvas.height = viewport.height;
-                                    pageDiv.appendChild(canvas);
-                                    
-                                    // ページをレンダリング
-                                    const renderContext = {
-                                        canvasContext: context,
-                                        viewport: viewport
-                                    };
-                                    
-                                    const renderTask = page.render(renderContext);
-                                    renderTask.promise.then(function() {
-                                        pagesCache[num] = pageDiv;
-                                        // ページを正しい位置に挿入する
-                                        insertPageInOrder(pageDiv, num);
-                                        
-                                        // 不要なページをアンロード（メモリ最適化）
-                                        optimizeMemory(num);
-                                        
-                                        resolve();
-                                    }).catch(function(error) {
-                                        reportErrorToVSCode(error);
-                                        console.error('ページレンダリングエラー:', error);
-                                        reject(error);
-                                    });
-                                }).catch(function(error) {
-                                    reportErrorToVSCode(error);
-                                    console.error('ページ取得エラー:', error);
-                                    reject(error);
-                                });
-                            });
-                        }
-
-                        // メモリ使用量を最適化
-                        function optimizeMemory(currentNum) {
-                            Object.keys(pagesCache).forEach(key => {
-                                const keyNum = parseInt(key);
-                                if (Math.abs(keyNum - currentNum) > 5) { // 現在のページから5ページ以上離れたページをアンロード
-                                    if (pagesCache[key] && pagesCache[key].parentNode) {
-                                        pagesCache[key].parentNode.removeChild(pagesCache[key]);
-                                    }
-                                }
-                            });
-                        }
-
-                        // 前のページに移動
-                        function goPrevPage() {
-                            if (pageNum <= 1) return;
-                            pageNum--;
-                            pageInput.value = pageNum;
-                            queueRenderPage(pageNum);
-                            
-                            // ページのレンダリングが完了した後、そのページにスクロールする
-                            // より直接的なスクロール方法を使用
-                            const tryScrollToPage = (attempts = 0) => {
-                                // 指定されたページの要素を取得
-                                const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                
-                                if (targetElement) {
-                                    // 絶対位置でスクロール
-                                    if (targetElement.offsetHeight > viewerContainer.clientHeight) {
-                                        // 大きいページは上部に合わせる（少し余白を持たせる）
-                                        viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                    } else {
-                                        // 小さいページは中央に表示
-                                        const centerOffset = (viewerContainer.clientHeight - targetElement.offsetHeight) / 2;
-                                        viewerContainer.scrollTop = targetElement.offsetTop - centerOffset;
-                                    }
-                                    
-                                    logToVSCode('ページ ' + pageNum + ' に絶対位置でスクロールしました');
-                                } else if (attempts < 5) { // 最大5回試行
-                                    logToVSCode('ページ ' + pageNum + ' の要素が見つかりません。再試行します... (' + (attempts + 1) + '/5)');
-                                    // ページがまだレンダリングされていない可能性があるため、再試行
-                                    setTimeout(() => tryScrollToPage(attempts + 1), 300); // 300ms後に再試行
-                                } else {
-                                    logToVSCode('ページ ' + pageNum + ' の要素が見つかりませんでした。すべてのページを再レンダリングします。');
-                                    // すべてのページを再レンダリング
-                                    refreshAllPages();
-                                    // 最後にもう一度スクロールを試みる
-                                    setTimeout(() => {
-                                        const element = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                        if (element) {
-                                            if (element.offsetHeight > viewerContainer.clientHeight) {
-                                                // 大きいページは上部に合わせる（少し余白を持たせる）
-                                                viewerContainer.scrollTop = element.offsetTop - 40;
-                                            } else {
-                                                // 小さいページは中央に表示
-                                                const centerOffset = (viewerContainer.clientHeight - element.offsetHeight) / 2;
-                                                viewerContainer.scrollTop = element.offsetTop - centerOffset;
-                                            }
-                                            
-                                            logToVSCode('ページ ' + pageNum + ' に直接スクロールしました（再レンダリング後）');
-                                        }
-                                    }, 800);
-                                }
-                            };
-                            
-                            // 初回試行（500ms待機）
-                            setTimeout(() => tryScrollToPage(), 500);
-                        }
-
-                        // 次のページに移動
-                        function goNextPage() {
-                            if (pageNum >= pdfDoc.numPages) return;
                             pageNum++;
-                            pageInput.value = pageNum;
-                            queueRenderPage(pageNum);
-                            
-                            // ページのレンダリングが完了した後、そのページにスクロールする
-                            // より直接的なスクロール方法を使用
-                            const tryScrollToPage = (attempts = 0) => {
-                                // 指定されたページの要素を取得
-                                const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                
-                                if (targetElement) {
-                                    // 絶対位置でスクロール
-                                    if (targetElement.offsetHeight > viewerContainer.clientHeight) {
-                                        // 大きいページは上部に合わせる（少し余白を持たせる）
-                                        viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                    } else {
-                                        // 小さいページは中央に表示
-                                        const centerOffset = (viewerContainer.clientHeight - targetElement.offsetHeight) / 2;
-                                        viewerContainer.scrollTop = targetElement.offsetTop - centerOffset;
-                                    }
-                                    
-                                    logToVSCode('ページ ' + pageNum + ' に絶対位置でスクロールしました');
-                                } else if (attempts < 5) { // 最大5回試行
-                                    logToVSCode('ページ ' + pageNum + ' の要素が見つかりません。再試行します... (' + (attempts + 1) + '/5)');
-                                    // ページがまだレンダリングされていない可能性があるため、再試行
-                                    setTimeout(() => tryScrollToPage(attempts + 1), 300); // 300ms後に再試行
-                                } else {
-                                    logToVSCode('ページ ' + pageNum + ' の要素が見つかりませんでした。すべてのページを再レンダリングします。');
-                                    // すべてのページを再レンダリング
-                                    refreshAllPages();
-                                    // 最後にもう一度スクロールを試みる
-                                    setTimeout(() => {
-                                        const element = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                        if (element) {
-                                            if (element.offsetHeight > viewerContainer.clientHeight) {
-                                                // 大きいページは上部に合わせる（少し余白を持たせる）
-                                                viewerContainer.scrollTop = element.offsetTop - 40;
-                                            } else {
-                                                // 小さいページは中央に表示
-                                                const centerOffset = (viewerContainer.clientHeight - element.offsetHeight) / 2;
-                                                viewerContainer.scrollTop = element.offsetTop - centerOffset;
-                                            }
-                                            
-                                            logToVSCode('ページ ' + pageNum + ' に直接スクロールしました（再レンダリング後）');
-                                        }
-                                    }, 800);
-                                }
-                            };
-                            
-                            // 初回試行（500ms待機）
-                            setTimeout(() => tryScrollToPage(), 500);
-                        }
-
-                        // 拡大
-                        function zoomIn() {
-                            if (scale >= 3.0) return;
-                            scale *= 1.2;
-                            resetZoomButtons();
-                            refreshAllPages();
-                        }
-
-                        // 縮小
-                        function zoomOut() {
-                            if (scale <= 0.5) return;
-                            scale /= 1.2;
-                            resetZoomButtons();
-                            refreshAllPages();
-                        }
-
-                        // ズームをリセット
-                        function resetZoom() {
-                            scale = 1.5;
-                            resetZoomButtons();
-                            resetZoomButton.classList.add('active');
-                            refreshAllPages();
-                        }
-
-                        // 幅に合わせる
-                        function fitToWidth() {
-                            if (!pdfDoc) return;
-                            
-                            pdfDoc.getPage(pageNum).then(function(page) {
-                                const viewport = page.getViewport({ scale: 1.0 });
-                                scale = (containerWidth) / viewport.width;
-                                
-                                resetZoomButtons();
-                                fitWidthButton.classList.add('active');
-                                
-                                refreshAllPages();
-                            });
-                        }
-
-                        // ズームボタンのリセット
-                        function resetZoomButtons() {
-                            fitWidthButton.classList.remove('active');
-                            resetZoomButton.classList.remove('active');
-                        }
-
-                        // ページを正しい順序で挿入する関数
-                        function insertPageInOrder(pageDiv, pageNumber) {
-                            // すでに同じページが表示されている場合は何もしない
-                            const existingPage = document.querySelector('.page[data-page-number="' + pageNumber + '"]');
-                            if (existingPage === pageDiv) {
-                                return;
-                            }
-                            
-                            // 既存のページを削除（重複を避けるため）
-                            if (existingPage) {
-                                existingPage.parentNode.removeChild(existingPage);
-                            }
-                            
-                            // ページを正しい位置に挿入
-                            const pages = viewer.querySelectorAll('.page');
-                            let inserted = false;
-                            
-                            for (let i = 0; i < pages.length; i++) {
-                                const currentPage = pages[i];
-                                const currentPageNum = parseInt(currentPage.dataset.pageNumber, 10);
-                                
-                                if (currentPageNum > pageNumber) {
-                                    // 現在のページの前に挿入
-                                    viewer.insertBefore(pageDiv, currentPage);
-                                    inserted = true;
-                                    break;
-                                }
-                            }
-                            
-                            // 最後に挿入（他のすべてのページより大きい番号の場合）
-                            if (!inserted) {
-                                viewer.appendChild(pageDiv);
-                            }
-                        }
-
-                        // すべてのページを更新
-                        function refreshAllPages() {
-                            // キャッシュをクリア
-                            pagesCache = {};
-                            viewer.innerHTML = '';
-                            renderQueue = [];
-                            isRendering = false;
-                            
-                            // 現在のページとその前後のページを優先的にレンダリング
-                            const pagesToRender = [];
-                            
-                            // 現在のページを最初にレンダリング
-                            pagesToRender.push(pageNum);
-                            
-                            // 前後のページを追加
-                            for (let i = 1; i <= 2; i++) {
-                                if (pageNum + i <= pdfDoc.numPages) {
-                                    pagesToRender.push(pageNum + i);
-                                }
-                                if (pageNum - i >= 1) {
-                                    pagesToRender.push(pageNum - i);
-                                }
-                            }
-                            
-                            // 残りのページを追加
-                            for (let i = 1; i <= pdfDoc.numPages; i++) {
-                                if (!pagesToRender.includes(i)) {
-                                    pagesToRender.push(i);
-                                }
-                            }
-                            
-                            // ページをレンダリングキューに追加
-                            pagesToRender.forEach(i => queueRenderPage(i));
-                            
-                            // 現在のページが表示されるまで待機してからスクロール
-                            const scrollToCurrentPage = (attempts = 0) => {
-                                // 現在のページの要素を探す
-                                const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                
-                                if (targetElement) {
-                                    // 絶対位置でスクロール
-                                    if (targetElement.offsetHeight > viewerContainer.clientHeight) {
-                                        // 大きいページは上部に合わせる（少し余白を持たせる）
-                                        viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                    } else {
-                                        // 小さいページは中央に表示
-                                        const centerOffset = (viewerContainer.clientHeight - targetElement.offsetHeight) / 2;
-                                        viewerContainer.scrollTop = targetElement.offsetTop - centerOffset;
-                                    }
-                                    
-                                    logToVSCode('ページ ' + pageNum + ' に絶対位置でスクロールしました（再レンダリング後）');
-                                } else if (attempts < 10) { // 最大10回試行
-                                    // ページがまだレンダリングされていない可能性があるため、再試行
-                                    setTimeout(() => scrollToCurrentPage(attempts + 1), 200); // 200ms後に再試行
-                                } else {
-                                    logToVSCode('ページ ' + pageNum + ' の要素が見つかりませんでした。スクロールに失敗しました。');
-                                }
-                            };
-                            
-                            // 初回スクロール試行（500ms待機）
-                            setTimeout(() => scrollToCurrentPage(), 500);
-                        }
-
-                        // イベントリスナーの設定
-                        prevButton.addEventListener('click', goPrevPage);
-                        nextButton.addEventListener('click', goNextPage);
-                        zoomInButton.addEventListener('click', zoomIn);
-                        zoomOutButton.addEventListener('click', zoomOut);
-                        resetZoomButton.addEventListener('click', resetZoom);
-                        fitWidthButton.addEventListener('click', fitToWidth);
+                            renderPage(pageNum);
+                        });
                         
                         pageInput.addEventListener('change', function() {
-                            const newPage = parseInt(pageInput.value);
-                            if (newPage >= 1 && newPage <= pdfDoc.numPages && newPage !== pageNum) {
-                                pageNum = newPage;
-                                
-                                // 現在のページとその前後のページを優先的にレンダリング
-                                queueRenderPage(pageNum);
-                                
-                                // 前後のページも追加
-                                if (pageNum > 1) {
-                                    queueRenderPage(pageNum - 1);
-                                }
-                                if (pageNum < pdfDoc.numPages) {
-                                    queueRenderPage(pageNum + 1);
-                                }
-                                
-                                // 指定されたページにスクロール
-                                const scrollToPage = (attempts = 0) => {
-                                    const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                    
-                                    if (targetElement) {
-                                        // 絶対位置でスクロール
-                                        if (targetElement.offsetHeight > viewerContainer.clientHeight) {
-                                            // 大きいページは上部に合わせる（少し余白を持たせる）
-                                            viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                        } else {
-                                            // 小さいページは中央に表示
-                                            const centerOffset = (viewerContainer.clientHeight - targetElement.offsetHeight) / 2;
-                                            viewerContainer.scrollTop = targetElement.offsetTop - centerOffset;
-                                        }
-                                        
-                                        logToVSCode('ページ ' + pageNum + ' に絶対位置でスクロールしました');
-                                    } else if (attempts < 5) {
-                                        setTimeout(() => scrollToPage(attempts + 1), 200);
-                                    } else {
-                                        logToVSCode('ページ ' + pageNum + ' の要素が見つかりませんでした。すべてのページを再レンダリングします。');
-                                        refreshAllPages();
-                                        // 最後にもう一度スクロールを試みる
-                                        setTimeout(() => {
-                                            const element = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                            if (element) {
-                                                if (element.offsetHeight > viewerContainer.clientHeight) {
-                                                    // 大きいページは上部に合わせる（少し余白を持たせる）
-                                                    viewerContainer.scrollTop = element.offsetTop - 40;
-                                                } else {
-                                                    // 小さいページは中央に表示
-                                                    const centerOffset = (viewerContainer.clientHeight - element.offsetHeight) / 2;
-                                                    viewerContainer.scrollTop = element.offsetTop - centerOffset;
-                                                }
-                                                
-                                                logToVSCode('ページ ' + pageNum + ' に直接スクロールしました（再レンダリング後）');
-                                            }
-                                        }, 500);
-                                    }
-                                };
-                                
-                                setTimeout(() => scrollToPage(), 300);
+                            const num = parseInt(pageInput.value);
+                            if (num > 0 && num <= pdfDoc.numPages) {
+                                pageNum = num;
+                                renderPage(pageNum);
                             } else {
                                 pageInput.value = pageNum;
                             }
                         });
                         
-                        // キーボードショートカット
-                        document.addEventListener('keydown', function(e) {
-                            if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-                                goPrevPage();
-                                e.preventDefault();
-                            } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-                                goNextPage();
-                                e.preventDefault();
-                            } else if (e.key === '+' || e.key === '=') {
-                                zoomIn();
-                                e.preventDefault();
-                            } else if (e.key === '-') {
-                                zoomOut();
-                                e.preventDefault();
-                            }
+                        zoomInButton.addEventListener('click', function() {
+                            scale *= 1.2;
+                            viewer.innerHTML = '';
+                            renderPage(pageNum);
                         });
-
-                        // URLハッシュフラグメントの変更を監視
-                        window.addEventListener('hashchange', function() {
-                            logToVSCode('URLハッシュが変更されました: ' + window.location.hash);
+                        
+                        zoomOutButton.addEventListener('click', function() {
+                            scale /= 1.2;
+                            viewer.innerHTML = '';
+                            renderPage(pageNum);
+                        });
+                        
+                        fitWidthButton.addEventListener('click', function() {
+                            // コンテナの幅に合わせてスケールを計算
+                            pdfDoc.getPage(pageNum).then(function(page) {
+                                const viewport = page.getViewport({ scale: 1.0 });
+                                scale = containerWidth / viewport.width;
+                                viewer.innerHTML = '';
+                                renderPage(pageNum);
+                            });
+                        });
+                        
+                        resetZoomButton.addEventListener('click', function() {
+                            scale = 1.5;
+                            viewer.innerHTML = '';
+                            renderPage(pageNum);
+                        });
+                        
+                        // ウィンドウサイズ変更時の処理
+                        window.addEventListener('resize', function() {
+                            containerWidth = document.getElementById('viewerContainer').clientWidth - 40;
+                        });
+                        
+                        // スクロール時の処理（ビューポート内のページを動的にレンダリング）
+                        viewerContainer.addEventListener('scroll', function() {
+                            if (!pdfDoc) return;
                             
-                            // ハッシュフラグメントからページ番号を抽出
-                            const urlHash = window.location.hash;
-                            if (urlHash) {
-                                // URLをデコード
-                                let decodedHash;
-                                try {
-                                    decodedHash = decodeURIComponent(urlHash);
-                                    logToVSCode('デコード後のURLハッシュ: ' + decodedHash);
-                                } catch (e) {
-                                    logToVSCode('URLハッシュのデコードに失敗: ' + e);
-                                    decodedHash = urlHash;
-                                }
+                            const visibleTop = viewerContainer.scrollTop;
+                            const visibleBottom = visibleTop + viewerContainer.clientHeight;
+                            
+                            // 表示範囲内のページを特定
+                            const pages = viewer.querySelectorAll('.page');
+                            let visiblePageNum = pageNum;
+                            
+                            for (let i = 0; i < pages.length; i++) {
+                                const page = pages[i];
+                                const pageTop = page.offsetTop;
+                                const pageBottom = pageTop + page.clientHeight;
                                 
-                                // #page=N 形式のチェック（デコード後）
-                                const pageMatch = decodedHash.match(/#page=(\d+)/i);
-                                if (pageMatch && pageMatch[1]) {
-                                    const newPage = parseInt(pageMatch[1], 10);
-                                    logToVSCode('デコードされたURLハッシュから抽出したページ番号(#page=N形式): ' + newPage);
-                                    
-                                    // ページ番号が有効な範囲内かチェック
-                                    if (newPage >= 1 && newPage <= pdfDoc.numPages && newPage !== pageNum) {
-                                        pageNum = newPage;
-                                        pageInput.value = pageNum;
-                                        
-                                        // ページをレンダリングしてスクロール
-                                        queueRenderPage(pageNum);
-                                        
-                                        // 前後のページも追加
-                                        if (pageNum > 1) {
-                                            queueRenderPage(pageNum - 1);
-                                        }
-                                        if (pageNum < pdfDoc.numPages) {
-                                            queueRenderPage(pageNum + 1);
-                                        }
-                                        
-                                        // 指定されたページにスクロール
-                                        setTimeout(() => {
-                                            const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                            if (targetElement) {
-                                                viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                                logToVSCode('ページ ' + pageNum + ' にスクロールしました（ハッシュ変更による）');
-                                            }
-                                        }, 300);
-                                    }
+                                // ページが表示範囲内にあるか確認
+                                if (pageTop < visibleBottom && pageBottom > visibleTop) {
+                                    const num = parseInt(page.getAttribute('data-page-number'));
+                                    visiblePageNum = num;
+                                    break;
                                 }
-                                // #N 形式のチェック（デコード後）
-                                else {
-                                    const hashMatch = decodedHash.match(/#(\d+)$/);
-                                    if (hashMatch && hashMatch[1]) {
-                                        const newPage = parseInt(hashMatch[1], 10);
-                                        logToVSCode('デコードされたURLハッシュから抽出したページ番号(#N形式): ' + newPage);
-                                        
-                                        // ページ番号が有効な範囲内かチェック
-                                        if (newPage >= 1 && newPage <= pdfDoc.numPages && newPage !== pageNum) {
-                                            pageNum = newPage;
-                                            pageInput.value = pageNum;
-                                            
-                                            // ページをレンダリングしてスクロール
-                                            queueRenderPage(pageNum);
-                                            
-                                            // 前後のページも追加
-                                            if (pageNum > 1) {
-                                                queueRenderPage(pageNum - 1);
-                                            }
-                                            if (pageNum < pdfDoc.numPages) {
-                                                queueRenderPage(pageNum + 1);
-                                            }
-                                            
-                                            // 指定されたページにスクロール
-                                            setTimeout(() => {
-                                                const targetElement = document.querySelector('.page[data-page-number="' + pageNum + '"]');
-                                                if (targetElement) {
-                                                    viewerContainer.scrollTop = targetElement.offsetTop - 40;
-                                                    logToVSCode('ページ ' + pageNum + ' にスクロールしました（ハッシュ変更による）');
-                                                }
-                                            }, 300);
-                                        }
-                                    }
+                            }
+                            
+                            // 現在のページ番号を更新
+                            if (visiblePageNum !== pageNum) {
+                                pageNum = visiblePageNum;
+                                pageInput.value = pageNum;
+                            }
+                            
+                            // 表示範囲の前後のページをレンダリング
+                            for (let i = 1; i <= pdfDoc.numPages; i++) {
+                                const page = document.querySelector('.page[data-page-number="' + i + '"]');
+                                if (!page) continue;
+                                
+                                const pageTop = page.offsetTop;
+                                const pageBottom = pageTop + page.clientHeight;
+                                
+                                // 表示範囲の前後のページをレンダリング
+                                if (pageBottom > visibleTop - 1000 && pageTop < visibleBottom + 1000) {
+                                    queueRenderPage(i);
                                 }
                             }
                         });
                     } catch (error) {
+                        loadingMessage.textContent = 'PDFの初期化に失敗しました: ' + error;
                         reportErrorToVSCode(error);
-                        document.getElementById('loadingMessage').textContent = 'PDFの初期化に失敗しました: ' + error;
-                        console.error('PDF初期化エラー:', error);
+                        logToVSCode('PDF初期化エラー: ' + error, true);
                     }
                 </script>
             </body>

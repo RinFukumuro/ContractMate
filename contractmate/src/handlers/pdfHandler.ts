@@ -980,7 +980,22 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
                                 // ページ要素を作成
                                 const pageDiv = document.createElement('div');
                                 pageDiv.className = 'page';
+                                // ページ番号を正しく設定（PDF.jsのページインデックスは1から始まる）
                                 pageDiv.setAttribute('data-page-number', num);
+                                // ページ番号を表示するための要素を追加
+                                const pageNumberDiv = document.createElement('div');
+                                pageNumberDiv.className = 'page-number';
+                                pageNumberDiv.textContent = String(num);
+                                pageNumberDiv.style.position = 'absolute';
+                                pageNumberDiv.style.bottom = '10px';
+                                pageNumberDiv.style.right = '10px';
+                                pageNumberDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+                                pageNumberDiv.style.color = 'white';
+                                pageNumberDiv.style.padding = '5px 10px';
+                                pageNumberDiv.style.borderRadius = '3px';
+                                pageNumberDiv.style.fontSize = '12px';
+                                pageDiv.style.position = 'relative';
+                                pageDiv.appendChild(pageNumberDiv);
                                 
                                 // キャンバスを作成
                                 const canvas = document.createElement('canvas');
@@ -1192,7 +1207,9 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
                             // 表示範囲内のページを特定
                             const pages = viewer.querySelectorAll('.page');
                             let visiblePageNum = pageNum;
+                            let maxVisibleArea = 0;
                             
+                            // 最も表示領域が大きいページを現在のページとする
                             for (let i = 0; i < pages.length; i++) {
                                 const page = pages[i];
                                 const pageTop = page.offsetTop;
@@ -1200,9 +1217,16 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
                                 
                                 // ページが表示範囲内にあるか確認
                                 if (pageTop < visibleBottom && pageBottom > visibleTop) {
-                                    const num = parseInt(page.getAttribute('data-page-number'));
-                                    visiblePageNum = num;
-                                    break;
+                                    // 表示領域の計算
+                                    const visibleTop_page = Math.max(pageTop, visibleTop);
+                                    const visibleBottom_page = Math.min(pageBottom, visibleBottom);
+                                    const visibleArea = visibleBottom_page - visibleTop_page;
+                                    
+                                    if (visibleArea > maxVisibleArea) {
+                                        maxVisibleArea = visibleArea;
+                                        const num = parseInt(page.getAttribute('data-page-number'));
+                                        visiblePageNum = num;
+                                    }
                                 }
                             }
                             
@@ -1212,18 +1236,9 @@ class PdfEditorProvider implements vscode.CustomReadonlyEditorProvider {
                                 pageInput.value = pageNum;
                             }
                             
-                            // 表示範囲の前後のページをレンダリング
+                            // すべてのページをレンダリングキューに追加（スムーズなスクロールのため）
                             for (let i = 1; i <= pdfDoc.numPages; i++) {
-                                const page = document.querySelector('.page[data-page-number="' + i + '"]');
-                                if (!page) continue;
-                                
-                                const pageTop = page.offsetTop;
-                                const pageBottom = pageTop + page.clientHeight;
-                                
-                                // 表示範囲の前後のページをレンダリング
-                                if (pageBottom > visibleTop - 1000 && pageTop < visibleBottom + 1000) {
-                                    queueRenderPage(i);
-                                }
+                                queueRenderPage(i);
                             }
                         });
                     } catch (error) {

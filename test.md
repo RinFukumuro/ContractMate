@@ -7,7 +7,7 @@
 ### 伊藤塾再現.pdf ファイルへのリンク（実際のファイル）
 
 - [伊藤塾再現 (1ページ目)](file:///C:/Users/Orinr/Downloads/%E4%BC%8A%E8%97%A4%E5%A1%BE%E5%86%8D%E7%8F%BE.pdf) - ページ指定なし
-- [伊藤塾再現 (2ページ目)](file:///C:/Users/Orinr/Downloads/%E4%BC%8A%E8%97%A4%E5%A1%BE%E5%86%8D%E7%8F%BE.pdf#page=2) - #page=N形式でページ指定
+- [伊藤塾再現 (2ページ目)](file:///C:/Users/Orinr/Documents/Gemini_pdf/平成28年2月3日パブリックコメント.pdf#page=2) - #page=N形式でページ指定
 - [伊藤塾再現 (3ページ目)](file:///C:/Users/Orinr/Downloads/%E4%BC%8A%E8%97%A4%E5%A1%BE%E5%86%8D%E7%8F%BE.pdf#page=3) - #page=N形式でページ指定
 
 **注意**: 現在のバージョンでは、`#page=N`形式のページ指定のみがサポートされています。

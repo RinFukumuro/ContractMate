@@ -153,34 +153,34 @@ export function activate(context: vscode.ExtensionContext) {
     });
     
     // Markdownプレビューが開かれたときのイベントリスナーを登録
-    const markdownPreviewListener = vscode.window.registerWebviewPanelSerializer('markdown.preview', {
-        async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel, state: any) {
-            // Markdownプレビューが復元されたときの処理
-            setupMarkdownLinkInterceptor(webviewPanel);
-        }
-    });
+    // const markdownPreviewListener = vscode.window.registerWebviewPanelSerializer('markdown.preview', {
+    //     async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel, state: any) {
+    //         // Markdownプレビューが復元されたときの処理
+    //         setupMarkdownLinkInterceptor(webviewPanel);
+    //     }
+    // });
     
     // Markdownプレビューが作成されたときのイベントリスナーを登録
-    const markdownPreviewProvider = vscode.workspace.registerTextDocumentContentProvider('markdown-preview', {
-        provideTextDocumentContent(uri: vscode.Uri): string {
-            return ''; // 実際のコンテンツはVSCodeが提供
-        }
-    });
+    // const markdownPreviewProvider = vscode.workspace.registerTextDocumentContentProvider('markdown-preview', {
+    //     provideTextDocumentContent(uri: vscode.Uri): string {
+    //         return ''; // 実際のコンテンツはVSCodeが提供
+    //     }
+    // });
     
     // Markdownファイルが開かれたときのイベントを監視
-    const markdownOpenListener = vscode.workspace.onDidOpenTextDocument((document) => {
-        if (document.languageId === 'markdown') {
-            // Markdownファイルが開かれたときに、少し遅延させてからプレビューを探す
-            setTimeout(() => {
-                // アクティブなWebviewパネルを取得
-                const activeEditor = vscode.window.activeTextEditor;
-                if (activeEditor && activeEditor.document.uri.toString() === document.uri.toString()) {
-                    // コマンドパレットからMarkdownプレビューを開くコマンドを実行
-                    vscode.commands.executeCommand('markdown.showPreview');
-                }
-            }, 500);
-        }
-    });
+    // const markdownOpenListener = vscode.workspace.onDidOpenTextDocument((document) => {
+    //     if (document.languageId === 'markdown') {
+    //         // Markdownファイルが開かれたときに、少し遅延させてからプレビューを探す
+    //         setTimeout(() => {
+    //             // アクティブなWebviewパネルを取得
+    //             const activeEditor = vscode.window.activeTextEditor;
+    //             if (activeEditor && activeEditor.document.uri.toString() === document.uri.toString()) {
+    //                 // コマンドパレットからMarkdownプレビューを開くコマンドを実行
+    //                 vscode.commands.executeCommand('markdown.showPreview');
+    //             }
+    //         }, 500);
+    //     }
+    // });
 
     // すべてのDisposableをコンテキストに追加
     context.subscriptions.push(
@@ -196,9 +196,9 @@ export function activate(context: vscode.ExtensionContext) {
         openSettingsCommand,
         handleMarkdownLinkCommand,
         fileOpenListener,
-        markdownPreviewListener,
-        markdownPreviewProvider,
-        markdownOpenListener,
+        // markdownPreviewListener,
+        // markdownPreviewProvider,
+        // markdownOpenListener,
         wordEditorProvider,
         excelEditorProvider,
         powerPointEditorProvider
